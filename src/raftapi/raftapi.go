@@ -37,3 +37,38 @@ type ApplyMsg struct {
 	SnapshotTerm  int
 	SnapshotIndex int
 }
+
+// 这些log struct是自己定义的
+
+// peers仅会有三种状态
+type RaftState string
+
+const (
+	Leader    RaftState = "Leader"
+	Follower            = "Follower"
+	Candidate           = "Candidate"
+)
+
+type Log struct {
+	Entries []Entry
+	Index0  int
+}
+
+type Entry struct {
+	Command interface{}
+	Term    int
+	Index   int
+}
+
+// method
+func MakeEmptyLog() Log {
+	log := Log{
+		Entries: make([]Entry, 0),
+		Index0:  0,
+	}
+	return log
+}
+
+func (l *Log) Append(entries ...Entry) {
+	l.Entries = append(l.Entries, entries...)
+}
