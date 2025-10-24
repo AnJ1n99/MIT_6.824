@@ -22,8 +22,9 @@ func (rf *Raft) leaderElection() {
 	rf.resetElectionTimer()
 
 	term := rf.currentTerm
+	// 自己已经给自己投了一票了
 	voteCounter := 1
-	lastLog := rf.log.lastLog()
+	lastLog := rf.log.LastLog()
 	DPrintf("[%v]: start leader election, term %d\n", rf.me, rf.currentTerm)
 
 	args := RequestVoteArgs{
@@ -36,7 +37,19 @@ func (rf *Raft) leaderElection() {
 
 	for serverId, _ := range rf.peers {
 		if serverId != rf.me {
-			go rf.candidateRequestVote()
+			go rf.candidateRequestVote(serverId, &args, &voteCounter, &becomeLeader)
 		}
+	}
+}
+
+// if RPC request or response contains term T > currentTerm:
+// set New Term and Convert to follower
+func (rf *Raft) setNewTerm(newTerm int) {
+	if newTerm > rf.currentTerm || rf.currentTerm == 0 {
+		rf.state = raftapi.Follower
+		rf.currentTerm = newTerm
+		rf.voteFor = -1
+		DPrintf("[%d]: set term %v\n", rf.me, rf.currentTerm)
+		rf.persist()
 	}
 }

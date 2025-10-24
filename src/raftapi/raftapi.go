@@ -72,3 +72,19 @@ func MakeEmptyLog() Log {
 func (l *Log) Append(entries ...Entry) {
 	l.Entries = append(l.Entries, entries...)
 }
+
+func (l *Log) LastLog() *Entry {
+	return l.At(l.len() - 1)
+}
+
+func (l *Log) At(index int) *Entry {
+	return &l.Entries[index]
+}
+
+func (l *Log) len() int {
+	return len(l.Entries)
+}
+
+func (l *Log) Slice(idx int) []Entry {
+	return l.Entries[idx:]
+}

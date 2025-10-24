@@ -39,7 +39,9 @@ type Raft struct {
 	commitIndex int
 	lastApplied int
 
-	// Volatile State On Leader
+	// Volatile State On Leader    (Reinitialized after election)
+	//matchIndex 是 Raft 协议中领导者用于跟踪各跟随者日志复制进度的索引数组。
+	//该字段仅在领导者节点上有效，记录了每个跟随者已成功复制的最高日志条目索引，用于判断何时可以安全提交日志。
 	nextIndex  []int
 	matchIndex []int
 
@@ -127,11 +129,41 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
+	Term        int
+	VoteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+	}
+
+	// Election Restriction: (防止commited log被覆盖)--只有拥有最新日志的节点才能成为 Leader。
+	//候选人最后一条Log条目的任期号大于本地最后一条Log条目的任期号；
+	//或者，候选人最后一条Log条目的任期号等于本地最后一条Log条目的任期号，且候选人的Log记录长度大于等于本地Log记录的长度
+	myLastLog := rf.log.LastLog()
+	upToDate := args.LastLogTerm > myLastLog.Term || (args.LastLogTerm == myLastLog.Term && args.LastLogIndex >= myLastLog.Index)
+	if (rf.voteFor == -1 || rf.voteFor == args.CandidateId) && upToDate {
+		reply.VoteGranted = true
+		rf.voteFor = args.CandidateId
+		rf.persist()
+		rf.resetElectionTimer()
+		DPrintf("[%v]: term %v vote %v", rf.me, rf.currentTerm, rf.voteFor)
+	} else {
+		reply.VoteGranted = false
+	}
+	reply.Term = rf.currentTerm
 }
 
 // example code to send a RequestVote RPC to a server.
