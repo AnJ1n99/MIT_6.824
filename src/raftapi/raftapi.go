@@ -74,17 +74,20 @@ func (l *Log) Append(entries ...Entry) {
 }
 
 func (l *Log) LastLog() *Entry {
-	return l.At(l.len() - 1)
+	return l.At(l.Len() - 1)
 }
 
 func (l *Log) At(index int) *Entry {
 	return &l.Entries[index]
 }
 
-func (l *Log) len() int {
+func (l *Log) Len() int {
 	return len(l.Entries)
 }
 
 func (l *Log) Slice(idx int) []Entry {
 	return l.Entries[idx:]
+}
+func (l *Log) Truncate(index int) {
+	l.Entries = l.Entries[:index]
 }

@@ -1,6 +1,8 @@
 package raft
 
-import "6.5840/raftapi"
+import (
+	"6.5840/raftapi"
+)
 
 type AppendEntriesArgs struct {
 	Term         int
@@ -74,26 +76,116 @@ func (rf *Raft) leaderSendEntries(peer int, args *AppendEntriesArgs) {
 		return
 	}
 	if args.Term == rf.currentTerm {
-		// rules for leader 3.1
+		// rules for leader 3
 		if reply.Success {
 			match := args.PrevLogIndex + len(args.Entries)
 			next := match + 1
+			// 防止因网络延迟而导致的回退
 			rf.nextIndex[peer] = max(rf.nextIndex[peer], next)
 			rf.matchIndex[peer] = max(rf.matchIndex[peer], match)
 			DPrintf("[%v]: %v append success next %v match %v", rf.me, peer, rf.nextIndex[peer], rf.matchIndex[peer])
 		} else if reply.Conflict {
-			// fast backup
-			
+			// fast backup to do
+
 		} else if rf.nextIndex[peer] > 1 {
 			rf.nextIndex[peer]--
 		}
 
 		rf.leaderCommitRule()
 	}
+}
 
+// Receiver implementation of AppendEntries RPC (Handler)
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	DPrintf("[%d]: (term %d) follower 收到 [%v] AppendEntries %v, prevIndex %v, prevTerm %v", rf.me, rf.currentTerm, args.LeaderId, args.Entries, args.PrevLogIndex, args.PrevLogTerm)
+
+	// rules for servers --> all server 2
+	reply.Success = false
+	reply.Term = rf.currentTerm
+	if args.Term > rf.currentTerm {
+		rf.setNewTerm(args.Term)
+		return
+	}
+	// Receiver implementation 1
+	if args.Term < rf.currentTerm {
+		return // ？ 为什么不成功不重置呢
+	}
+
+	rf.resetElectionTimer()
+	// candidate rule 3
+	if rf.state == raftapi.Candidate {
+		rf.state = raftapi.Follower
+	}
+	// append entries rpc 2
+	// fast backup info
+	if rf.log.LastLog().Index < args.PrevLogIndex {
+		reply.Conflict = true
+		reply.XTerm = -1
+		reply.XIndex = -1
+		reply.XLen = rf.log.Len()
+		DPrintf("[%v]: Conflict XTerm %v, XIndex %v, XLen %v", rf.me, reply.XTerm, reply.XIndex, reply.XLen)
+		return
+	}
+	if rf.log.At(args.PrevLogIndex).Term != args.PrevLogTerm {
+		reply.Conflict = true
+		// to do fast backup
+		return
+	}
+
+	for idx, entry := range args.Entries {
+		// Receiver implementation 3
+		if entry.Index <= rf.log.LastLog().Index && rf.log.At(entry.Index).Term != entry.Term {
+			rf.log.Truncate(entry.Index)
+			rf.persist()
+		}
+		// Receiver implementation 4
+		// is new command exist仅需判断是否大于lastLog.index
+		if entry.Index > rf.log.LastLog().Index {
+			rf.log.Append(entry)
+			DPrintf("[%d]: follower append [%v]", rf.me, args.Entries[idx:])
+			rf.persist()
+			break
+		}
+	}
+	// Receiver implementation 5
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, rf.log.LastLog().Index)
+		rf.apply()
+	}
+
+	reply.Success = true
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
+}
+
+func (rf *Raft) leaderCommitRule() {
+	// leader rule 4
+	if rf.state != raftapi.Leader {
+		return
+	}
+
+	for n := rf.commitIndex + 1; n <= rf.log.LastLog().Index; n++ {
+		// cannot commit entries from old term
+		if rf.log.At(n).Term != rf.currentTerm {
+			continue
+		}
+		// count how many matchIndex >= n
+		counter := 1 // include self
+		for serverId := 0; serverId < len(rf.peers); serverId++ {
+			if serverId != rf.me && rf.matchIndex[serverId] >= n {
+				counter++
+			}
+			if counter > len(rf.peers)/2 {
+				rf.commitIndex = n
+				DPrintf("[%v] leader尝试提交 index %v", rf.me, rf.commitIndex)
+				rf.apply()
+				break
+			}
+		}
+	}
 }
