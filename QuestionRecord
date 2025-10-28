@@ -375,3 +375,84 @@ Chinese
   你应该在 setNewTerm 函数中添加 rf.resetElectionTimer() 调用，或者在 AppendEntries 函数中调用 setNewTerm 后立即重置定时器。
 
   这确实是一个 bug，会导致在任期更新时选举定时器没有被正确重置
+6. 这个警告 "term changed even though there were no failures"
+  出现的原因我已经找到了。让我详细解释：
+
+  测试逻辑（raft_test.go:46-51）
+
+  // does the leader+term stay the same if there is no network failure?
+  time.Sleep(2 * RaftElectionTimeout)
+  term2 := ts.checkTerms()
+  if term1 != term2 {
+      fmt.Printf("warning: term changed even though there were no failures")
+  }
+
+  测试期望：在没有网络故障的情况下，等待 2 秒后，term 应该保持不变。
+
+  根本原因
+
+  问题出在 AppendEntries RPC handler 的实现上（append_entries.go:107-109）：
+
+  if args.Term > rf.currentTerm {
+      rf.setNewTerm(args.Term)
+      return  // ⚠️ 这里直接返回了，没有重置选举计时器！
+  }
+
+  问题链条：
+
+  1. Leader 发送心跳：Leader 在 ticker 中定期发送心跳（AppendEntries RPC）
+  2. Follower 收到旧 term 的心跳：如果 follower 的 term
+  已经更新（比如在某个短暂的时刻），当它收到一个 term 更高的心跳时
+  3. 更新 term 但不重置计时器：代码在 line 108 调用 setNewTerm(args.Term) 更新了
+  term，但在 line 109 立即返回，跳过了 line 116 的 rf.resetElectionTimer()
+  4. 选举超时触发：由于没有重置选举计时器，follower 可能会在短时间内选举超时
+  5. 发起新选举：超时的 follower 变成 candidate，增加 term 并发起新一轮选举
+  6. Term 不必要地增加：即使网络正常、没有故障，term 也会增加
+
+  具体场景示例
+
+  时刻 T0: Leader(term=1) 和 Followers(term=1) 都正常
+  时刻 T1: Leader 发送心跳 AppendEntries(term=1)
+  时刻 T2: Follower A 的选举计时器即将超时
+  时刻 T3: Follower A 收到心跳，但由于某种原因 term 已经是 2
+           - 执行 setNewTerm(2)
+           - 立即 return，没有重置选举计时器 ❌
+  时刻 T4: Follower A 的选举计时器超时
+           - 变成 Candidate，term++ (变成 3)
+           - 发起新选举
+  时刻 T5: 整个集群的 term 从 1 变成了 3，但实际上没有任何故障
+
+  修复方案
+
+  在 append_entries.go:107-109 处，应该在更新 term 后也重置选举计时器：
+
+  if args.Term > rf.currentTerm {
+      rf.setNewTerm(args.Term)
+      reply.Term = rf.currentTerm  // 更新 reply
+      // 不要立即返回，继续执行后面的逻辑
+  }
+
+  或者更简单的方式，将 resetElectionTimer() 移到更早的位置：
+
+  if args.Term > rf.currentTerm {
+      rf.setNewTerm(args.Term)
+  }
+  if args.Term < rf.currentTerm {
+      return
+  }
+  // 只要 term 相等或更新后，都应该重置计时器
+  rf.resetElectionTimer()
+
+  为什么测试通过了但有警告
+
+  - 测试仍然通过是因为 Raft 协议本身是正确的，term 增加不会导致正确性问题
+  - 但这是一个性能问题：不必要的选举会增加 RPC 数量，降低系统效率
+  - 警告提示你的实现虽然正确，但不够优化
+
+  总结
+
+  核心问题：在 AppendEntries handler 中，当收到更高 term 的消息时，更新了 term
+  但没有重置选举计时器就返回了，导致 follower 可能很快超时并发起不必要的选举。
+
+  解决方法：确保在接收到有效的 AppendEntries（包括 term
+  更新的情况）时，都要重置选举计时器。

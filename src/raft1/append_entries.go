@@ -106,11 +106,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	if args.Term > rf.currentTerm {
 		rf.setNewTerm(args.Term)
+		rf.resetElectionTimer()
 		return
 	}
 	// Receiver implementation 1
 	if args.Term < rf.currentTerm {
-		return // ？ 为什么不成功不重置呢
+		return // ？ 为什么不成功不重置呢 -- 已经过期
 	}
 
 	rf.resetElectionTimer()

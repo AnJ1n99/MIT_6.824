@@ -1,13 +1,17 @@
 package raft
 
 import (
+	"math/rand"
 	"sync"
+	"time"
 
 	"6.5840/raftapi"
 )
 
 func (rf *Raft) resetElectionTimer() {
-
+	t := time.Now()
+	electionTimeout := time.Duration(150+rand.Intn(150)) * time.Millisecond
+	rf.electionTime = t.Add(electionTimeout)
 }
 
 func (rf *Raft) leaderElection() {
