@@ -106,7 +106,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	if args.Term > rf.currentTerm {
 		rf.setNewTerm(args.Term)
-		// rf.resetElectionTimer()  是否需要呢
+		rf.resetElectionTimer() // 是否需要呢
 		return
 	}
 	// Receiver implementation 1

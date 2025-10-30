@@ -8,7 +8,7 @@ package raft
 
 import (
 	//	"bytes"
-	"math/rand"
+
 	"sync"
 	"sync/atomic"
 	"time"
@@ -143,14 +143,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	if args.Term > rf.currentTerm {
+		rf.setNewTerm(args.Term)
+	}
+
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 		return
-	}
-
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
 	}
 
 	// Election Restriction: (防止commited log被覆盖)--只有拥有最新日志的节点才能成为 Leader。
@@ -251,7 +251,7 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350 milliseconds.
 		// Raft使用随机的选举超时，以确保分裂投票很少发生，并能迅速解决
-		ms := 50 + (rand.Int63() % 300)
+		ms := 50 // + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 		rf.mu.Lock()
