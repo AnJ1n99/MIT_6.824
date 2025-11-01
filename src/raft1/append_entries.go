@@ -152,6 +152,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// Receiver implementation 5
 	if args.LeaderCommit > rf.commitIndex {
+		// 并非所有的peer都能立刻跟上leader的commitIndex
 		rf.commitIndex = min(args.LeaderCommit, rf.log.LastLog().Index)
 		rf.apply()
 	}

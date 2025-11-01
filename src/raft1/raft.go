@@ -9,6 +9,8 @@ package raft
 import (
 	//	"bytes"
 
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -221,7 +223,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (3B).
 
-	return index, term, isLeader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != raftapi.Leader {
+		return index, term, false
+	}
+
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -289,6 +297,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.resetElectionTimer()
 
 	rf.log = raftapi.MakeEmptyLog()
+	// 添加一条哨兵日志，index从1开始
 	rf.log.Append(raftapi.Entry{Command: -1, Term: 0, Index: 0})
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -316,5 +325,33 @@ func (rf *Raft) apply() {
 }
 
 func (rf *Raft) applier() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	for !rf.killed() {
+		// all server rule 1
+		if rf.commitIndex > rf.lastApplied && rf.log.LastLog().Index > rf.lastApplied {
+			rf.lastApplied++
+			applyMsg := raftapi.ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log.At(rf.lastApplied).Command,
+				CommandIndex: rf.lastApplied,
+			}
+			DPrintVerbose("[%v]: COMMIT %d: %v", rf.me, rf.lastApplied, rf.commits())
+			rf.mu.Unlock()
+			rf.applyCh <- applyMsg
+			rf.mu.Lock()
+		} else {
+			rf.applyCond.Wait()
+			DPrintf("[%v]: rf.applyCond.Wait()", rf.me)
+		}
+	}
+}
+
+func (rf *Raft) commits() string {
+	nums := []string{}
+	for i := 0; i <= rf.lastApplied; i++ {
+		nums = append(nums, fmt.Sprintf("%4d", rf.log.At(i).Command))
+	}
+	return fmt.Sprint(strings.Join(nums, "|"))
 }
