@@ -53,7 +53,6 @@ func (rf *Raft) setNewTerm(newTerm int) {
 		rf.state = raftapi.Follower
 		rf.currentTerm = newTerm
 		rf.voteFor = -1
-		// 是否要重置计时器
 		DPrintf("[%d]: set term %v\n", rf.me, rf.currentTerm)
 		rf.persist()
 	}

@@ -131,7 +131,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if rf.log.At(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.Conflict = true
-		// to do fast backup
+
 		return
 	}
 

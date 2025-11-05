@@ -42,7 +42,6 @@ type Raft struct {
 	lastApplied int
 
 	// Volatile State On Leader    (Reinitialized after election)
-	//matchIndex 是 Raft 协议中领导者用于跟踪各跟随者日志复制进度的索引数组。
 	//该字段仅在领导者节点上有效，记录了每个跟随者已成功复制的最高日志条目索引，用于判断何时可以安全提交日志。
 	nextIndex  []int
 	matchIndex []int
@@ -217,19 +216,29 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (3B).
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	if rf.state != raftapi.Leader {
-		return index, term, false
+		return -1, rf.currentTerm, false
 	}
 
+	index := rf.log.LastLog().Index + 1
+	term := rf.currentTerm
+
+	log := raftapi.Entry{
+		Command: command,
+		Term:    term,
+		Index:   index,
+	}
+	rf.log.Append(log)
+	rf.persist()
+	DPrintf("[%v]: term %v Start %v", rf.me, term, log)
+	rf.appendEntries(false)
+
+	return index, term, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
