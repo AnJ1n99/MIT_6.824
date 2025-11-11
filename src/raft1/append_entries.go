@@ -75,6 +75,7 @@ func (rf *Raft) leaderSendEntries(peer int, args *AppendEntriesArgs) {
 		rf.setNewTerm(reply.Term)
 		return
 	}
+	// 当前任期的RPC Reply
 	if args.Term == rf.currentTerm {
 		// rules for leader 3
 		if reply.Success {
@@ -86,13 +87,39 @@ func (rf *Raft) leaderSendEntries(peer int, args *AppendEntriesArgs) {
 			DPrintf("[%v]: %v append success next %v match %v", rf.me, peer, rf.nextIndex[peer], rf.matchIndex[peer])
 		} else if reply.Conflict {
 			// fast backup to do
-
+			DPrintf("[%v]: Conflict from %v %#v", rf.me, peer, reply)
+			if reply.XTerm == -1 {
+				// 此处log的idx从0开始，所以len就是nextIdx
+				rf.nextIndex[peer] = reply.XLen
+			} else {
+				lastLogInXTerm := rf.findLastLogInTerm(reply.XTerm)
+				DPrintf("[%v]: lastLogInXTerm %v", rf.me, lastLogInXTerm)
+				if lastLogInXTerm > 0 {
+					rf.nextIndex[peer] = lastLogInXTerm
+				} else {
+					rf.nextIndex[peer] = reply.XIndex
+				}
+			}
+			DPrintf("[%v]: leader nextIndex[%v] %v", rf.me, peer, rf.nextIndex[peer])
 		} else if rf.nextIndex[peer] > 1 {
+			// 慢回退
 			rf.nextIndex[peer]--
 		}
 
 		rf.leaderCommitRule()
 	}
+}
+func (rf *Raft) findLastLogInTerm(x int) int {
+	for i := rf.log.LastLog().Index; i > 0; i-- {
+		term := rf.log.At(i).Term
+		if term == x {
+			return i
+		} else if term < x {
+			break
+		}
+	}
+	// 缺少了该term的log
+	return -1
 }
 
 // Receiver implementation of AppendEntries RPC (Handler)
@@ -121,6 +148,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	// append entries rpc 2
 	// fast backup info
+	// Follower在对应位置没有Log，这里会返回 -1
 	if rf.log.LastLog().Index < args.PrevLogIndex {
 		reply.Conflict = true
 		reply.XTerm = -1
@@ -131,10 +159,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if rf.log.At(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.Conflict = true
-
+		xTerm := rf.log.At(args.PrevLogIndex).Term
+		// 向前遍历,找到第一个冲突 ——> Follower中，对应任期号为XTerm的第一条Log条目的槽位号。
+		for xIndex := args.PrevLogIndex; xIndex > 0; xIndex-- {
+			if rf.log.At(xIndex-1).Term != xTerm {
+				reply.XIndex = xIndex
+				break
+			}
+		}
+		reply.XTerm = xTerm
+		reply.XLen = rf.log.Len()
+		DPrintf("[%v]: Conflict XTerm %v, XIndex %v, XLen %v", rf.me, reply.XTerm, reply.XIndex, reply.XLen)
 		return
 	}
-
 	for idx, entry := range args.Entries {
 		// Receiver implementation 3
 		if entry.Index <= rf.log.LastLog().Index && rf.log.At(entry.Index).Term != entry.Term {
