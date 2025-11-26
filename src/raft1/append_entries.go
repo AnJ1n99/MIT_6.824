@@ -181,7 +181,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// Receiver implementation 4
 		// is new command exist仅需判断是否大于lastLog.index
 		if entry.Index > rf.log.LastLog().Index {
-			rf.log.Append(entry)
+			rf.log.Append(args.Entries[idx:]...)
 			DPrintf("[%d]: follower append [%v]", rf.me, args.Entries[idx:])
 			rf.persist()
 			break

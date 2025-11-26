@@ -1,5 +1,10 @@
 package raftapi
 
+import (
+	"fmt"
+	"strings"
+)
+
 // The Raft interface
 type Raft interface {
 	// Start agreement on a new log entry, and return the log index
@@ -90,4 +95,14 @@ func (l *Log) Slice(idx int) []Entry {
 }
 func (l *Log) Truncate(index int) {
 	l.Entries = l.Entries[:index]
+}
+func (e *Entry) String() string {
+	return fmt.Sprint(e.Term)
+}
+func (l *Log) String() string {
+	nums := []string{}
+	for _, entry := range l.Entries {
+		nums = append(nums, fmt.Sprintf("%4d", entry.Term))
+	}
+	return fmt.Sprint(strings.Join(nums, "|"))
 }
