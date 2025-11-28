@@ -31,7 +31,7 @@ func (rf *Raft) appendEntries(heartbeat bool) {
 			continue
 		}
 
-		// rules for leader,即使是心跳也要进行f2的检查，既不应区别对待
+		// rules for leader,即使是心跳也要进行figture2的检查，不应区别对待
 		// 发送从nextIndex开始的appendEntry
 		if lastLog.Index >= rf.nextIndex[peer] || heartbeat {
 			nextIndex := rf.nextIndex[peer]
@@ -44,18 +44,24 @@ func (rf *Raft) appendEntries(heartbeat bool) {
 				nextIndex = lastLog.Index
 			}
 
-			prevLog := rf.log.At(nextIndex - 1) // peer's last log
-			args := AppendEntriesArgs{
-				Term:         rf.currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: prevLog.Index,
-				PrevLogTerm:  prevLog.Term,
-				Entries:      make([]raftapi.Entry, lastLog.Index-nextIndex+1),
-				LeaderCommit: rf.commitIndex,
+			// 检查nextIndex-1是否已经被快照了
+			if nextIndex-1 < rf.lastIncludedIndex {
+				// 表示Follower有落后的部分且被截断, 改为发送同步心跳
+				DPrintf("leader %v 取消向 server %v 广播新的心跳, 改为发送sendInstallSnapshot, lastIncludedIndex=%v, nextIndex[%v]=%v\n", rf.me, peer, rf.lastIncludedIndex, peer, rf.nextIndex[peer])
+				go rf.handleInstallSnapshot(peer)
+			} else {
+				prevLog := rf.log.At(nextIndex - 1) // peer's last log
+				args := AppendEntriesArgs{
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: prevLog.Index,
+					PrevLogTerm:  prevLog.Term,
+					Entries:      make([]raftapi.Entry, lastLog.Index-nextIndex+1),
+					LeaderCommit: rf.commitIndex,
+				}
+				copy(args.Entries, rf.log.Slice(nextIndex))
+				go rf.leaderSendEntries(peer, &args)
 			}
-			copy(args.Entries, rf.log.Slice(nextIndex))
-
-			go rf.leaderSendEntries(peer, &args)
 		}
 	}
 }
@@ -89,8 +95,14 @@ func (rf *Raft) leaderSendEntries(peer int, args *AppendEntriesArgs) {
 			// fast backup to do
 			DPrintf("[%v]: Conflict from %v %#v", rf.me, peer, reply)
 			if reply.XTerm == -1 {
-				// 此处log的idx从0开始，所以len就是nextIdx
-				rf.nextIndex[peer] = reply.XLen
+				// Follower中在PrevLogIndex位置不存在日志
+				DPrintf("leader %v 收到 server %v 的回退请求, 原因是log过短, 回退前的nextIndex[%v]=%v, 回退后的nextIndex[%v]=%v\n", rf.me, peer, peer, rf.nextIndex[peer], peer, reply.XLen)
+				if rf.lastIncludedIndex >= reply.XLen {
+					go rf.handleInstallSnapshot(peer)
+				} else {
+					// 此处log的idx从0开始，所以len就是nextIdx
+					rf.nextIndex[peer] = reply.XLen
+				}
 			} else {
 				lastLogInXTerm := rf.findLastLogInTerm(reply.XTerm)
 				DPrintf("[%v]: lastLogInXTerm %v", rf.me, lastLogInXTerm)
@@ -110,7 +122,7 @@ func (rf *Raft) leaderSendEntries(peer int, args *AppendEntriesArgs) {
 	}
 }
 func (rf *Raft) findLastLogInTerm(x int) int {
-	for i := rf.log.LastLog().Index; i > 0; i-- {
+	for i := rf.log.LastLog().Index; i >= rf.log.Index0; i-- {
 		term := rf.log.At(i).Term
 		if term == x {
 			return i
@@ -157,11 +169,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("[%v]: Conflict XTerm %v, XIndex %v, XLen %v", rf.me, reply.XTerm, reply.XIndex, reply.XLen)
 		return
 	}
-	if rf.log.At(args.PrevLogIndex).Term != args.PrevLogTerm {
+	// 如果PrevLogIndex已经被快照了，说明follower已经有了这部分日志
+	if args.PrevLogIndex < rf.log.Index0 {
+		// PrevLogIndex已经在快照中，不需要检查term匹配
+		// 直接跳到处理entries的部分
+	} else if rf.log.At(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.Conflict = true
 		xTerm := rf.log.At(args.PrevLogIndex).Term
 		// 向前遍历,找到第一个冲突 ——> Follower中，对应任期号为XTerm的第一条Log条目的槽位号。
-		for xIndex := args.PrevLogIndex; xIndex > 0; xIndex-- {
+		for xIndex := args.PrevLogIndex; xIndex > rf.log.Index0; xIndex-- {
 			if rf.log.At(xIndex-1).Term != xTerm {
 				reply.XIndex = xIndex
 				break
@@ -173,6 +189,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	for idx, entry := range args.Entries {
+		// 跳过已经在快照中的entries
+		if entry.Index < rf.log.Index0 {
+			continue
+		}
 		// Receiver implementation 3
 		if entry.Index <= rf.log.LastLog().Index && rf.log.At(entry.Index).Term != entry.Term {
 			rf.log.Truncate(entry.Index)

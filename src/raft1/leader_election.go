@@ -14,6 +14,18 @@ func (rf *Raft) resetElectionTimer() {
 	rf.electionTime = t.Add(electionTimeout)
 }
 
+// if RPC request or response contains term T > currentTerm:
+// set New Term and Convert to follower
+func (rf *Raft) setNewTerm(newTerm int) {
+	if newTerm > rf.currentTerm || rf.currentTerm == 0 {
+		rf.state = raftapi.Follower
+		rf.currentTerm = newTerm
+		rf.voteFor = -1
+		DPrintf("[%d]: set term %v\n", rf.me, rf.currentTerm)
+		rf.persist()
+	}
+}
+
 func (rf *Raft) leaderElection() {
 	//一个任期内不能有超过一个Leader
 	//所以为了成为一个新的Leader，这里需要开启一个新的任期
@@ -43,17 +55,5 @@ func (rf *Raft) leaderElection() {
 		if serverId != rf.me {
 			go rf.candidateRequestVote(serverId, &args, &voteCounter, &becomeLeader)
 		}
-	}
-}
-
-// if RPC request or response contains term T > currentTerm:
-// set New Term and Convert to follower
-func (rf *Raft) setNewTerm(newTerm int) {
-	if newTerm > rf.currentTerm || rf.currentTerm == 0 {
-		rf.state = raftapi.Follower
-		rf.currentTerm = newTerm
-		rf.voteFor = -1
-		DPrintf("[%d]: set term %v\n", rf.me, rf.currentTerm)
-		rf.persist()
 	}
 }

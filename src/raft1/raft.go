@@ -53,6 +53,10 @@ type Raft struct {
 	applyCond *sync.Cond
 	//记录下次选举超时的时间点
 	electionTime time.Time
+
+	snapShot          []byte // 快照
+	lastIncludedIndex int    // 快照的最后一条日志的索引
+	lastIncludedTerm  int    // 快照的最后一条日志的任期号
 }
 
 // return currentTerm and whether this server
@@ -84,13 +88,16 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.voteFor)
 	e.Encode(rf.log)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
+
 	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+	rf.persister.SaveRaftState(data, rf.snapShot)
 }
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
+	if len(data) < 1 { // bootstrap without any state?
 		return
 	}
 	// Your code here (3C).
@@ -100,13 +107,23 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var logs raftapi.Log
+	var lastIncludedIndex int
+	var lastIncludedTerm int
 
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logs) != nil {
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&logs) != nil ||
+		d.Decode(&lastIncludedIndex) != nil ||
+		d.Decode(&lastIncludedTerm) != nil {
 		log.Fatal("Failed to read persist\n")
 	} else {
 		rf.currentTerm = currentTerm
 		rf.voteFor = votedFor
 		rf.log = logs
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
+		rf.commitIndex = lastIncludedIndex
+		rf.lastApplied = lastIncludedIndex
 	}
 }
 
@@ -123,7 +140,37 @@ func (rf *Raft) PersistBytes() int {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	DPrintVerbose("[%v]: Snapshot: index %v, snapshot %v", rf.me, index, snapshot)
 
+	// 快照不能包含未提交的日志
+	// 快照不能包含重复的快照请求
+	if index > rf.commitIndex || index <= rf.lastIncludedIndex {
+		DPrintf("server[%v] : 拒绝snapshot请求 (index=%d, commitIndex=%d, lastIncludedIndex=%d)",
+			rf.me, index, rf.commitIndex, rf.lastIncludedIndex)
+		return
+	}
+	DPrintf("server[%v]: 接受snapshot请求 (index=%d)", rf.me, index)
+
+	// 保存快照数据
+	rf.snapShot = snapshot
+
+	// 获取快照最后一条日志的任期号
+	rf.lastIncludedTerm = rf.log.At(index).Term
+
+	// 截断日志：只保留index之后的日志条目
+	// 将index对应的日志转换为真实数组索引后进行截断
+	realIdx := rf.RealLogIdx(index)
+	rf.log.Entries = append([]raftapi.Entry{}, rf.log.Entries[realIdx:]...)
+	rf.lastIncludedIndex = index
+	// 更新Log的Index0，使其知道数组起始位置对应的虚拟索引
+	rf.log.Index0 = index
+	if rf.lastApplied < index {
+		// 能被提交快照之后的日志肯定是已经被应用的
+		rf.lastApplied = index
+	}
+	rf.persist()
 }
 
 // example RequestVote RPC arguments structure.
@@ -267,7 +314,7 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
@@ -318,12 +365,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.readSnapshot(persister.ReadSnapshot())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
@@ -365,7 +412,7 @@ func (rf *Raft) applier() {
 
 func (rf *Raft) commits() string {
 	nums := []string{}
-	for i := 0; i <= rf.lastApplied; i++ {
+	for i := rf.log.Index0; i <= rf.lastApplied; i++ {
 		nums = append(nums, fmt.Sprintf("%4d", rf.log.At(i).Command))
 	}
 	return fmt.Sprint(strings.Join(nums, "|"))
