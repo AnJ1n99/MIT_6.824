@@ -35,10 +35,11 @@ func (ps *Persister) Copy() *Persister {
 	np.snapshot = ps.snapshot
 	return np
 }
-func (ps *Persister) SaveRaftState(state []byte) {
+func (ps *Persister) SaveRaftState(state []byte, snapshot []byte) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	ps.raftstate = clone(state)
+	ps.snapshot = clone(snapshot)
 }
 func (ps *Persister) ReadRaftState() []byte {
 	ps.mu.Lock()

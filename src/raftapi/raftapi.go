@@ -79,22 +79,25 @@ func (l *Log) Append(entries ...Entry) {
 }
 
 func (l *Log) LastLog() *Entry {
-	return l.At(l.Len() - 1)
+	if len(l.Entries) == 0 {
+		return &Entry{Index: l.Index0, Term: 0}
+	}
+	return &l.Entries[len(l.Entries)-1]
 }
 
 func (l *Log) At(index int) *Entry {
-	return &l.Entries[index]
+	return &l.Entries[index-l.Index0]
 }
 
 func (l *Log) Len() int {
-	return len(l.Entries)
+	return l.Index0 + len(l.Entries)
 }
 
 func (l *Log) Slice(idx int) []Entry {
-	return l.Entries[idx:]
+	return l.Entries[idx-l.Index0:]
 }
 func (l *Log) Truncate(index int) {
-	l.Entries = l.Entries[:index]
+	l.Entries = l.Entries[:index-l.Index0]
 }
 func (e *Entry) String() string {
 	return fmt.Sprint(e.Term)
