@@ -146,9 +146,14 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	// 快照不能包含未提交的日志
 	// 快照不能包含重复的快照请求
-	if index > rf.commitIndex || index <= rf.lastIncludedIndex {
+	if index > rf.commitIndex || index <= rf.log.Index0 {
 		DPrintf("server[%v] : 拒绝snapshot请求 (index=%d, commitIndex=%d, lastIncludedIndex=%d)",
 			rf.me, index, rf.commitIndex, rf.lastIncludedIndex)
+		return
+	}
+	if index > rf.log.LastLog().Index {
+		DPrintf("server[%v] : 拒绝snapshot请求 (index=%d, lastLogIndex=%d)",
+			rf.me, index, rf.log.LastLog().Index)
 		return
 	}
 	DPrintf("server[%v]: 接受snapshot请求 (index=%d)", rf.me, index)
@@ -156,12 +161,18 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// 保存快照数据
 	rf.snapShot = snapshot
 
-	// 获取快照最后一条日志的任期号
-	rf.lastIncludedTerm = rf.log.At(index).Term
-
 	// 截断日志：只保留index之后的日志条目
 	// 将index对应的日志转换为真实数组索引后进行截断
-	realIdx := rf.RealLogIdx(index)
+	realIdx := index - rf.log.Index0
+	if realIdx < 0 || realIdx >= len(rf.log.Entries) {
+		DPrintf("server[%v] : 拒绝snapshot请求 (index=%d, index0=%d, entries=%d)",
+			rf.me, index, rf.log.Index0, len(rf.log.Entries))
+		return
+	}
+
+	// 获取快照最后一条日志的任期号
+	rf.lastIncludedTerm = rf.log.Entries[realIdx].Term
+
 	rf.log.Entries = append([]raftapi.Entry{}, rf.log.Entries[realIdx:]...)
 	rf.lastIncludedIndex = index
 	// 更新Log的Index0，使其知道数组起始位置对应的虚拟索引
@@ -408,6 +419,8 @@ func (rf *Raft) applier() {
 			DPrintf("[%v]: rf.applyCond.Wait()", rf.me)
 		}
 	}
+	// 要关闭 chan 防止影响上层的 service
+	close(rf.applyCh)
 }
 
 func (rf *Raft) commits() string {

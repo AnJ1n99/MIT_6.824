@@ -16,11 +16,11 @@ type InstallSnapshotReply struct {
 }
 
 func (rf *Raft) RealLogIdx(vIdx int) int {
-	return vIdx - rf.lastIncludedIndex
+	return vIdx - rf.log.Index0
 }
 
 func (rf *Raft) VirtualLogIdx(realIdx int) int {
-	return realIdx + rf.lastIncludedIndex
+	return realIdx + rf.log.Index0
 }
 
 func (rf *Raft) readSnapshot(data []byte) {
@@ -96,13 +96,12 @@ valid and must be retained
 */
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	defer func() {
-		rf.resetElectionTimer()
-		rf.mu.Unlock()
-	}()
 
 	// rules for all server 2
 	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		rf.resetElectionTimer()
+		rf.mu.Unlock()
 		return
 	}
 	if args.Term > rf.currentTerm {
@@ -155,6 +154,10 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	reply.Term = rf.currentTerm
-	rf.applyCh <- *msg
 	rf.persist()
+	rf.resetElectionTimer()
+	rf.mu.Unlock()
+
+	// do not block while holding rf.mu
+	rf.applyCh <- *msg
 }

@@ -1,20 +1,35 @@
 package kvraft
 
 import (
-	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
-	"6.5840/tester1"
-)
+	"math/rand"
+	"sync"
 
+	"6.5840/kvsrv1/rpc"
+	kvtest "6.5840/kvtest1"
+	tester "6.5840/tester1"
+)
 
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
 	// You will have to modify this struct.
+	//  缓存上一次成功通信的服务器索引，减少错误重试次数
+	cacheLeaderIdx int
+	clientId       int64
+	requestId      int64
+	mu             sync.Mutex
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
-	ck := &Clerk{clnt: clnt, servers: servers}
+	ck := &Clerk{
+		clnt:    clnt,
+		servers: servers,
+
+		cacheLeaderIdx: 0,
+		clientId:       rand.Int63(),
+		requestId:      0,
+		mu:             sync.Mutex{},
+	}
 	// You'll have to add code here.
 	return ck
 }
@@ -32,7 +47,30 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 
 	// You will have to modify this function.
-	return "", 0, ""
+	i := ck.cacheLeaderIdx
+	defer func() {
+		ck.cacheLeaderIdx = i
+	}()
+
+	ck.mu.Lock()
+	ck.requestId++
+	reqId := ck.requestId
+	ck.mu.Unlock()
+
+	args := GetArgs{
+		Key:      key,
+		ReqId:    reqId,
+		ClientId: ck.clientId,
+	}
+
+	reply := GetReply{}
+	var ok bool
+	// 收到非领导者或者错误时不断重复
+	for reply.Err == rpc.ErrWrongLeader || !ok {
+		ok = ck.clnt.Call(ck.servers[i], "KVServer.Get", &args, &reply)
+		i = (i + 1) % len(ck.servers)
+	}
+	return reply.Value, reply.Version, reply.Err
 }
 
 // Put updates key with value only if the version in the
@@ -54,5 +92,30 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	return ""
+	i := ck.cacheLeaderIdx
+	defer func() {
+		ck.cacheLeaderIdx = i
+	}()
+
+	ck.mu.Lock()
+	ck.requestId++
+	reqId := ck.requestId
+	ck.mu.Unlock()
+
+	args := PutArgs{
+		Key:      key,
+		Value:    value,
+		ReqId:    reqId,
+		ClientId: ck.clientId,
+		Version:  version,
+	}
+
+	reply := PutReply{}
+	var ok bool
+	// 收到非领导者或者错误时不断重复
+	for reply.Err == rpc.ErrWrongLeader || !ok {
+		ok = ck.clnt.Call(ck.servers[i], "KVServer.Put", &args, &reply)
+		i = (i + 1) % len(ck.servers)
+	}
+	return reply.Err
 }
